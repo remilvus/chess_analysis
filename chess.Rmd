@@ -1,0 +1,138 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(DBI)
+library(gPdtest) # pareto
+
+to_numeric <- function(list){
+  return (as.numeric(unlist(list)))
+}
+
+pprint<-function(...){
+     print(paste(...))
+}
+```
+
+Wczytywanie danych
+```{r}
+con <- dbConnect(RSQLite::SQLite(), ":memory:")
+chess <- read.csv(file="./games.csv", header=TRUE, sep=",")
+df <- data.frame(chess) 
+dbWriteTable(con, "chess", df)
+
+res <- dbSendQuery(con, "ALTER TABLE chess ADD time int")
+res <- dbSendQuery(con, "UPDATE chess
+                  SET time= CASE WHEN last_move_at - created_at=0 
+                            then NULL
+                            ELSE last_move_at - created_at
+                            END
+                  ")
+df <- dbReadTable(con, "chess")
+res <- dbSendQuery(con, "DROP TABLE chess")
+
+idx_all = c(0:11)
+idx_drop = c(2, 3, 7)
+dbWriteTable(con, "chess", df[!(idx_all %in% idx_drop)])
+
+dbReadTable(con, "chess")
+```
+zapytania
+```{r}
+#tak
+res <- dbSendQuery(con, "SELECT id, rated FROM chess")
+dbFetch(res)
+dbClearResult(res)
+
+#lub tak
+dbGetQuery(con, "SELECT AVG(time)/600000 FROM chess") 
+```
+
+czas gry
+```{r}
+res <- dbGetQuery(con, "SELECT time FROM chess WHERE time is not null")
+hist(to_numeric(res["time"]), nclass =30000)
+hist(to_numeric(res["time"]), xlim=c(0,4e6), ylim=c(0,250), nclass =30000)
+```
+
+
+
+
+
+\section{Analiza eco (otwarcia)}
+
+$H_0$: częstość rozgrywania eco jest rozłożona zgonie z rozkładem Pareto\newline
+$H_1$: zmienna ta jest rozłożona według innego rozkładu\newline
+przyjęty poziom istotności: $\alpha=0.05$
+```{r}
+eco_sum <- dbGetQuery(con, "SELECT opening_eco, COUNT(*) as sum FROM chess WHERE opening_eco is not null GROUP BY opening_eco") 
+eco_sum = eco_sum[order(-eco_sum[,"sum"]), ]
+barplot(eco_sum$sum)
+print(gpd.test(eco_sum$sum)$boot.test)
+ptsuite::pareto_qq_test(eco_sum$sum)
+```
+Uzyskana p-wartość jest znacząco mniejsza od przyjętego poziomu istotności, co wspiera odrzucenie $H_1$.
+
+```{r}
+most_played = length(eco_sum$sum)*0.2
+print(sum(eco_sum$sum[0:most_played])/sum(eco_sum$sum))
+```
+Pomimo, że rozkład nie jest zgodny z rozkładem Pareta to zgodnie z zasadą Pareta 20% najczęściej rozgrywanych eco stanowi 80% wszystkich rozgrywanych eco.\newline\newline
+
+\section*{Zwycięstwa, a eco (w tej części ignorowane są remisy)}
+Przez gry wygrane będą rozumiane gry wygrane przez gracza białego.\newline
+w-ilość zwycięstw\newline
+p-ilość porażek\newline
+$H_0$: Rozkład zwycięstw dla każdego eco jest rozkładem $B(n_i, p\_win)$, gdzie\newline
+$n_i=w_i+p_i$ ($w_i,p_i$ - analogicznie do w i p dla rozgrywek w których użyto i-tego eco)\newline 
+$p\_win=\frac {w} {w + p}$ \newline
+$H_1$: Rozkład zwycięstw dla każdego eco jest rozkładem $B(n_i, p_i)$, gdzie p_i jest inne dla każdego eco\newline
+przyjęty poziom istotności: $\alpha=0.05$
+```{r}
+eco_sum <- dbGetQuery(con, "SELECT opening_eco, COUNT(*) as sum FROM chess WHERE opening_eco is not null and winner<>'draw' GROUP BY opening_eco") 
+eco_sum = eco_sum[order(-eco_sum[,"sum"]), ]
+
+eco <- dbGetQuery(con, "SELECT winner, opening_eco, COUNT(*) as count FROM chess WHERE opening_eco is not null and winner<>'draw' GROUP BY opening_eco, winner") 
+
+eco = merge(eco, eco_sum, by="opening_eco")
+win_p = sum(eco$count[eco$winner=='white'])/sum(eco_sum$sum)
+  
+#eco = eco[order(-eco[,"count"]), ]
+#barplot(eco$count)
+
+eco = eco[eco$sum>50,] # brane są pod uwagę tylko eco dla których suma przegranych i wygranych jest większa niż 50
+eco$prob = eco$count/eco$sum
+eco = eco[eco$winner=='white',]
+eco = eco[order(-eco$prob),]
+barplot(eco$prob, names.arg=eco$opening_eco, ylab="prawdopodonieństwo wygranej", xlab="kod eco")
+```
+Aby sprawdzić hipotezę dla każdego eco zostanie estymowany przedział wartośći $p_i$ z przedziałem ufności równym 0.95. Aby $H_0$ była spełniona znajdowanie się w estymowanym przedziale $p_i$ wartości p_win powinno być określone przez rozkład $B(n, 0.95)$.
+
+```{r}
+in_interval = 0
+for (i in 1:length(eco$count)){
+  res = binom.test(eco$count[i], eco$sum[i], p=win_p)
+  if(res$conf.int[1] < win_p && win_p < res$conf.int[2]){
+    in_interval = in_interval+1;
+  }
+}
+pprint(in_interval/length(eco$count)*100, "% przedziałów p_i zawiera p_win")
+print(binom.test(in_interval, length(eco$count), 0.95))
+```
+otrzymana p-wartość << $\alpha$, więc $H_0$ zostaje odrzucona.
+
+
+$H_0$: nie zachodzi korelacja pomiędzy estymatorem szansy wygranej i częstotliością z jaką dane eco jest zagrywane\newline
+$H_1$: zachodzi korelacja pomiędzy estymatorem szansy wygranej i częstotliością z jaką dane eco jest zagrywane\newline
+przyjęty poziom istotności: $\alpha=0.05$
+```{r}
+hist(eco$prob, breaks=12)
+barplot(rev(eco$count), names.arg=rev(eco$prob), ylab="ilość gier", xlab="% wygranch")
+pprint(sum(eco$sum[eco$prob>0.5])/sum(eco$sum)*100, "")
+pprint(sum(eco$sum[eco$prob<0.5])/sum(eco$sum)*100, "")
+print(cor.test(eco$prob, eco$sum))
+```
+
+otrzymana p-wartość jest większa niż $\alpha$, więc nie ma wystarczających dowodów aby odrzucić $H_0$\newline
