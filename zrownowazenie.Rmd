@@ -1,0 +1,65 @@
+---
+title: "Zrównoważenie graczy"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+System powinien dobierać graczy w sposób jak najbardziej zrównoważony, tzn. każdy gracz powinien mieć mniej więcej taką samą liczbę wygranych, jak i przegranych partii.
+```{r}
+library(DBI)
+
+to_numeric <- function(list){
+  return (as.numeric(unlist(list)))
+}
+
+pprint<-function(...){
+     print(paste(...))
+}
+```
+
+Wczytywanie danych
+```{r}
+con <- dbConnect(RSQLite::SQLite(), ":memory:")
+chess <- read.csv(file="./games.csv", header=TRUE, sep=",")
+df <- data.frame(chess) 
+dbWriteTable(con, "chess", df)
+
+dbReadTable(con, "chess")
+```
+
+Szybkie przejrzenie danych, na których mam zamiar się skupić:
+```{r}
+res <- dbGetQuery(con, "SELECT white_rating, black_rating FROM chess")
+str(res)
+summary(res)
+```
+
+Porównanie który kolor wygrywał częściej:
+```{r}
+res <- dbGetQuery(con, "SELECT winner FROM chess")
+str(res)
+white <- dbGetQuery(con, "SELECT COUNT(*) FROM chess WHERE winner like 'white'")
+black <- dbGetQuery(con, "SELECT COUNT(*) FROM chess WHERE winner like 'black'")
+pprint(white)
+pprint(black)
+```
+
+Z powyższych danych można odczytać, że wygrywający częściej gra białymi figurami.
+
+
+Dokładniejsza analiza:
+różnica w rankingu graczy
+```{r}
+res_white <- dbGetQuery(con, "SELECT white_rating FROM chess")
+res_black <- dbGetQuery(con, "SELECT black_rating FROM chess")
+v_white <- to_numeric(res_white["white_rating"])
+v_black <- to_numeric(res_black["black_rating"])
+difference <- abs(v_white-v_black)
+hist(difference, nclass=350)
+
+```
+
+
+Wynik: najczęściej zdarzają się małe różnice w rankingu graczy.
+Obserwacja: kształt wykresu jest zbliżony do krzywej hiperbolicznej.
