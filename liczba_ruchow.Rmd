@@ -1,0 +1,110 @@
+---
+title: "Liczba wykonanych przez graczy ruchów"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+```{r}
+library(DBI)
+
+to_numeric <- function(list){
+  return (as.numeric(unlist(list)))
+}
+
+pprint<-function(...){
+     print(paste(...))
+}
+```
+
+Wczytywanie danych
+```{r}
+con <- dbConnect(RSQLite::SQLite(), ":memory:")
+chess <- read.csv(file="./games.csv", header=TRUE, sep=",")
+df <- data.frame(chess) 
+dbWriteTable(con, "chess", df)
+
+dbReadTable(con, "chess")
+```
+
+Szybkie przejrzenie danych, na których mam zamiar się skupić:
+```{r}
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE turns is not null")
+str(res)
+summary(res)
+```
+Dokładniejsza analiza:
+histogramy odpowiednio dla liczby ruchów w zależności od wyniku końcowego gry
+
+```{r}
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE turns is not null") #wszystkie
+hist(to_numeric(res["turns"]), nclass=350, main="Wszystkie gry", xlab="Liczba ruchów", ylab="Częstotliwość występowania")
+
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE (turns is not null AND victory_status like 'draw')")
+hist(to_numeric(res["turns"]), nclass=350, main="Remisy", xlab="Liczba ruchów", ylab="Częstotliwość występowania")
+
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE (turns is not null AND victory_status like 'outoftime')")
+hist(to_numeric(res["turns"]), nclass=350, main="Koniec czasu", xlab="Liczba ruchów", ylab="Częstotliwość występowania")
+
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE (turns is not null AND victory_status like 'resign')")
+hist(to_numeric(res["turns"]), nclass=350, main="Rezygnacja", xlab="Liczba ruchów", ylab="Częstotliwość występowania")
+
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE (turns is not null AND victory_status like 'mate')")
+hist(to_numeric(res["turns"]), nclass=350, main="Mat", xlab="Liczba ruchów", ylab="Częstotliwość występowania")
+
+```
+
+Za ciekawe spostrzerzenie uważam zauważalną w porówaniu z pozostałymi wykresami nieregularność wykresu opisującego gry zakończone remisami.
+
+Statystyka opisowa: wartości charakterystyczne wyliczone z danych
+```{r}
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE turns is not null")
+mean(to_numeric(res["turns"])) #średnia
+median(to_numeric(res["turns"])) #mediana
+diff(range(to_numeric(res["turns"]))) #rozstęp
+var(to_numeric(res["turns"])) #wariancja
+sd(to_numeric(res["turns"])) #odchylenie standardowe
+mean(abs(to_numeric(res["turns"])-mean(to_numeric(res["turns"])))) #odchylenie przeciętne
+fivenum(to_numeric(res["turns"])) #kwantyle (min, 1, mediana, 3, max)
+IQR(to_numeric(res["turns"])) #rozstęp międzykwartylowy
+boxplot(to_numeric(res["turns"])) #wykres
+```
+
+Na podstawie wykresów wnioskować można, że najczęściej gra jest kończona po ok. 60 ruchach (średnia i mediana zbiegają się w okolicach tej wartości)
+
+Reguła trzech sigm: dane spoza zakresu uważamy za odstające i nie uwzględniamy ich w dalszej analizie.
+```{r}
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE turns is not null")
+
+m <- mean(to_numeric(res["turns"])) #średnia
+s <- sd(to_numeric(res["turns"])) #odchylenie standardowe
+
+v <- res["turns"][m-3*s<res["turns"] && res["turns"]<m+3*s] #wektor tur
+str(v)
+summary(v)
+boxplot(to_numeric(v))
+
+```
+
+Liczba zapisanych wierszy przy pominięciu wartości odstających pozostała taka sama (20058). Uznajemy więc zbiór za względnie jednolity.
+
+Test Shapiro-Wilka:
+[konieczne jest zawężenie danych: długość argumentu funkcji shapiro-test musi być pomiędzy 3 a 5000 --- wprowadzenie wektora u]
+```{r}
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE turns is not null")
+v <- to_numeric(res["turns"])
+u <- v[1: 5000]
+shapiro.test(u)
+```
+dla otrzymanego oszacowania wartości p:
+```{r}
+2.2e-16<0.1
+```
+stąd nie mamy podstaw do obalenia normalności próby.
+
+Test Studenta:
+```{r}
+res <- dbGetQuery(con, "SELECT turns FROM chess WHERE turns is not null")
+v <- to_numeric(res["turns"])
+t.test(v)
+```
